@@ -1,0 +1,4 @@
+assets/data/saved_predicts/*
+
+assets/data/flights/*
+!assets/data/flights/flights_list.json

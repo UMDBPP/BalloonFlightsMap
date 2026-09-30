@@ -1,0 +1,50 @@
+#flights_display_container {
+    display:            flex;
+    flex:               1;
+}
+
+#flight_info {
+    min-width:          10%;
+    max-width:          60%;
+    width:              30%;
+    height:             100vh;
+    overflow-y:         scroll;
+    scrollbar-gutter:   stable;
+    resize:             horizontal;
+}
+
+#flight_info > * {
+    padding: 0 1em 0;
+}
+
+#flight_info details {
+    border: 1px solid #aaaaaa;
+    border-radius: 4px;
+    padding: 0.5em 0.5em 0;
+}
+
+#flight_info summary {
+    font-weight: bold;
+    margin: -0.5em -0.5em 0;
+    padding: 0.5em;
+}
+
+#flight_info details[open] {
+    padding: 0.5em;
+}
+
+#flight_info details[open] summary {
+    border-bottom: 1px solid #aaaaaa;
+    margin-bottom: 0.5em;
+}
+
+#flight_info .chart_container {
+    height:             40vh
+}
+
+#map_container {
+    display:            flex;
+    flex:               1;
+    flex-direction:     column;
+    height:             100%;
+}

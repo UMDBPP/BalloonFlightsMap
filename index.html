@@ -1,0 +1,342 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" name="viewport">
+
+    <title>BalloonFlightsMap</title>
+    <link href="./assets/images/icons/balloon.png" rel="shortcut icon" type="image/png">
+
+    <script src="https://ajax.googleapis.com/ajax/libs/jquery/3.7.1/jquery.min.js"></script>
+    <!--#comment Get toKML from the predicts map for now -->
+    <script src="../../predicts/BalloonPredictionMap/assets/scripts/tokml/tokml.js"></script>
+    <!-- <script src="https://cdn.jsdelivr.net/npm/chart.js@4.5.0/dist/chart.umd.min.js"></script> -->
+
+    <script src="BalloonBaseMap/BalloonBaseMap_injector.js"></script>
+    <script src="BalloonFlightsMap_injector.js" onload="inject_BalloonFlightsMap();"></script>
+</head>
+<body>
+<main>
+<article id="flights_display_container">
+    <section id="flight_info">
+        <h2>Flight Info</h2>
+        <!-- <p>[info and graphs and stuff from the visible flights in collapsible sections here]</p> -->
+    </section>
+    <section id="map_container">
+        <section id="map">
+            <script type="module">
+                import * as BalloonFlightsMap from "./BalloonFlightsMap.js"
+                import { Chart, LineController, LineElement, PointElement, LinearScale, TimeScale, Legend, Tooltip, Colors } from "chart.js"
+                import "chartjs-adapter-date-fns"
+
+                Chart.register(LineController, LineElement, PointElement, LinearScale, TimeScale, Legend, Tooltip, Colors);
+
+                const BalloonFlightsMap_obj = BalloonFlightsMap.init_BalloonFlightsMap("map");
+                const data_directory = "./assets/data/flights/";
+
+                BalloonFlightsMap_obj.then((obj) => {
+                    // Add a listener for the debug button
+                    document.querySelector('#debug_button').addEventListener('click', () => {
+                        console.log(obj["map"]);
+                        console.log(obj["map"].getStyle());
+                        console.log(obj["layer_switcher"]);
+                        debugger;
+                    });
+
+                    function handle_flight_visibility_change(event){
+
+                        let flight_layer_def = BalloonFlightsMap.layer_defs["Flights"].find((layer_def) => layer_def["name"] === event.target.labels[0].innerText);
+
+                        // If the layer was just made visible,
+                        if(event.target.checked){
+                            // Set the layer's source data to the flight file handled by the custom protocol
+                            if(flight_layer_def["properties"]["filetype"] == "kml"){
+                                obj["map"].getSource(flight_layer_def["id"] + "_source").setData("flightskml://" + data_directory + flight_layer_def["id"] + ".KML");
+                            } else{ // Assume GeoJSON file type by default
+                                obj["map"].getSource(flight_layer_def["id"] + "_source").setData("flights://" + data_directory + flight_layer_def["id"] + ".geojson");
+                            }
+
+                            // Create the flight info details
+                            let details_el = document.createElement("details");
+                            details_el.id = flight_layer_def["id"] + "_details";
+                            details_el.open = true;
+
+                            details_el.innerHTML = 
+                                "<summary>" + flight_layer_def["name"] + "</summary>"
+                                + `<table>`
+                                    + `<tbody>`
+                                        + `<tr><th scope="row">Max Altitude (meters)</th><td id="` + flight_layer_def["id"] + `_max_altitude"></td>`
+                                        + `<tr><th scope="row">Data Start Time</th><td id="` + flight_layer_def["id"] + `_start_time"></td>`
+                                        + `<tr><th scope="row">Data End Time</th><td id="` + flight_layer_def["id"] + `_end_time"></td>`
+                                        + `<tr><th scope="row">Start Location</th><td id="` + flight_layer_def["id"] + `_start_location"></td>`
+                                        + `<tr><th scope="row">End Location</th><td id="` + flight_layer_def["id"] + `_end_location"></td>`
+                                    + `</tbody>`
+                                + `</table>`
+                                + `<div class="chart_container"><canvas id="` + flight_layer_def["id"] + `_altitude_chart"></canvas></div>`
+                                + `<div class="chart_container"><canvas id="` + flight_layer_def["id"] + `_vertical_rates_chart"></canvas></div>`
+                                // "<p>[little quick facts box thing: flight start/end times, duration, max altitude, avg ascent/descent rates, launch/landing locations]</p>" + 
+                                // "<p>[altitude chart]</p>" + 
+                                // "<p>[altitude rate chart]</p>" + 
+                                // "<p>[payload list?]</p>" + 
+                                // "<p>[other info?]</p>";
+
+                            document.getElementById("flight_info").appendChild(details_el);
+
+                        // If the layer was just made invisible,
+                        } else{
+                            // Set the layer's source data to an empty GeoJSON FeatureCollection to prevent extreme memory usage
+                            obj["map"].getSource(flight_layer_def["id"] + "_source").setData({
+                                "type": "FeatureCollection",
+                                "features": []
+                            });
+
+                            // Remove the flight info details
+                            let details_el = document.getElementById(flight_layer_def["id"] + "_details");
+                            if(details_el){
+                                details_el.remove();
+                            }
+                            // Delete the flight info from the visible flights data object
+                            if(BalloonFlightsMap.visible_flights_data[flight_layer_def["id"]]){
+                                delete BalloonFlightsMap.visible_flights_data[flight_layer_def["id"]];
+                            }
+                        }
+                    }
+
+
+                    // Add listeners to the Flights checkboxes in the layer switcher to update the flight info display sections
+                    for(let list_el of $(`h4:contains("Flights")`).siblings()[0].children){
+                        list_el.children[0].children[0].addEventListener("change", handle_flight_visibility_change);
+                    }
+
+
+                    // Add a listener for map source data updates to update flight info
+                    obj["map"].on('sourcedata', (e) => {
+                        let flight_id = e.sourceId.substring(0, e.sourceId.indexOf("_source"));
+                        // If the source is loaded and is one of the ones in the visible flights data object
+                        if(e.isSourceLoaded && Object.keys(BalloonFlightsMap.visible_flights_data).includes(flight_id)){
+                            // Set up the flight info charts data
+                            let flight_data = {};
+                            flight_data["altitude_data"] = {};
+                            flight_data["altitude_data"]["datasets"] = [];
+                            flight_data["vertical_rates_data"] = {};
+                            flight_data["vertical_rates_data"]["datasets"] = [];
+                            BalloonFlightsMap.visible_flights_data[flight_id]["max_altitude_m"] = 0;
+                            let times_available = true;
+                            let start_time;
+                            let idx_data = 0;
+
+                            // Loop through features (skipping the meta-properties object at index 0)
+                            for(let idx = 1, num_features = BalloonFlightsMap.visible_flights_data[flight_id].length; idx < num_features; idx++){
+                                if(BalloonFlightsMap.visible_flights_data[flight_id][idx]["type"] !== "Polygon"){
+                                    let altitude;
+                                    let altitude_arr = [];
+                                    let vertical_rates_arr = [];
+                                    let vertical_rates_delta = 4;
+                                    if(!BalloonFlightsMap.visible_flights_data[flight_id][idx]["times"]){
+                                        times_available = false;
+                                    }
+
+                                    for(let idx_coord = 0, num_coords = BalloonFlightsMap.visible_flights_data[flight_id][idx]["altitudes_m"].length; idx_coord < num_coords; idx_coord++){
+                                        altitude = BalloonFlightsMap.visible_flights_data[flight_id][idx]["altitudes_m"][idx_coord];
+
+                                        if(times_available){
+                                            altitude_arr.push({"x": BalloonFlightsMap.visible_flights_data[flight_id][idx]["times"][idx_coord], "y": altitude})
+                                        } else {
+                                            altitude_arr.push({"x": idx_data, "y": altitude});
+                                        }
+
+                                        if(idx_coord > vertical_rates_delta && idx_coord < num_coords - vertical_rates_delta){
+                                            if(times_available){
+                                                vertical_rates_arr.push({
+                                                    "x": BalloonFlightsMap.visible_flights_data[flight_id][idx]["times"][idx_coord],
+                                                    "y": (
+                                                            BalloonFlightsMap.visible_flights_data[flight_id][idx]["altitudes_m"][idx_coord + vertical_rates_delta]
+                                                            - BalloonFlightsMap.visible_flights_data[flight_id][idx]["altitudes_m"][idx_coord - vertical_rates_delta]
+                                                        ) / (
+                                                            (new Date(BalloonFlightsMap.visible_flights_data[flight_id][idx]["times"][idx_coord + vertical_rates_delta])).getTime()
+                                                            - (new Date(BalloonFlightsMap.visible_flights_data[flight_id][idx]["times"][idx_coord - vertical_rates_delta])).getTime()
+                                                        ) * 1000
+                                                });
+
+                                            } else {
+                                                vertical_rates_arr.push({
+                                                    "x": idx_data,
+                                                    "y": (
+                                                            BalloonFlightsMap.visible_flights_data[flight_id][idx]["altitudes_m"][idx_coord + vertical_rates_delta]
+                                                            - BalloonFlightsMap.visible_flights_data[flight_id][idx]["altitudes_m"][idx_coord - vertical_rates_delta]
+                                                        ) / (
+                                                            2*vertical_rates_delta + 1
+                                                        )
+                                                });
+                                            }
+                                        }
+
+                                        idx_data++;
+                                        
+                                        if(altitude > BalloonFlightsMap.visible_flights_data[flight_id]["max_altitude_m"]){
+                                            BalloonFlightsMap.visible_flights_data[flight_id]["max_altitude_m"] = altitude;
+                                        }
+                                    }
+
+                                    flight_data["altitude_data"]["datasets"].push({
+                                        "label": (BalloonFlightsMap.visible_flights_data[flight_id][idx]["name"] ? `` + BalloonFlightsMap.visible_flights_data[flight_id][idx]["name"] : ""),
+                                        "data": altitude_arr
+                                    });
+
+                                    flight_data["vertical_rates_data"]["datasets"].push({
+                                        "label": (BalloonFlightsMap.visible_flights_data[flight_id][idx]["name"] ? `` + BalloonFlightsMap.visible_flights_data[flight_id][idx]["name"] : ""),
+                                        "data": vertical_rates_arr
+                                    });
+                                }
+                            }
+
+                            document.getElementById(flight_id + "_max_altitude").innerText = Math.round(BalloonFlightsMap.visible_flights_data[flight_id]["max_altitude_m"]);
+                            document.getElementById(flight_id + "_start_location").innerText = "(" + BalloonFlightsMap.visible_flights_data[flight_id][0]["start_location"][0] + ", " + BalloonFlightsMap.visible_flights_data[flight_id][0]["start_location"][1] + ")";
+                            document.getElementById(flight_id + "_end_location").innerText = "(" + BalloonFlightsMap.visible_flights_data[flight_id][0]["end_location"][0] + ", " + BalloonFlightsMap.visible_flights_data[flight_id][0]["end_location"][1] + ")";
+                            if(times_available){
+                                document.getElementById(flight_id + "_start_time").innerText = (new Date(flight_data["altitude_data"]["datasets"][0]["data"][0]["x"])).toLocaleString();
+                                document.getElementById(flight_id + "_end_time").innerText = (new Date(flight_data["altitude_data"]["datasets"].at(-1)["data"].at(-1)["x"])).toLocaleString();
+                            } else{
+                                let temp_var = document.getElementById(flight_id + "_start_time");
+                                if(temp_var){
+                                    temp_var.parentElement.remove();
+                                }
+                                temp_var = document.getElementById(flight_id + "_end_time");
+                                if(temp_var){
+                                    temp_var.parentElement.remove();
+                                }
+                            }
+
+                            BalloonFlightsMap.visible_flights_data[flight_id]["altitude_chart_data"] = $.extend(true, {}, flight_data["altitude_data"]);
+                            if(!BalloonFlightsMap.visible_flights_data[flight_id]["altitude_chart"]){
+                                BalloonFlightsMap.visible_flights_data[flight_id]["altitude_chart"] = new Chart(document.getElementById(flight_id + "_altitude_chart"), {
+                                    "type": "line",
+                                    "data": BalloonFlightsMap.visible_flights_data[flight_id]["altitude_chart_data"],
+                                    "options": {
+                                        "responsive": true,
+                                        "maintainAspectRatio": false,
+                                        "plugins": {
+                                            "legend": {
+                                                "position": "top",
+                                            },
+                                            // "title": {
+                                            //     "display": true,
+                                            //     "text": flight_id + " Altitudes",
+                                            //     "position": "bottom",
+                                            // }
+                                        },
+                                        "scales": {
+                                            "x": {
+                                                "type": times_available ? "time" : "linear",
+                                                "title": {
+                                                    "display": true,
+                                                    "text": times_available ? "Time" : "Index"
+                                                }
+                                            },
+                                            "y": {
+                                                "title": {
+                                                    "display": true,
+                                                    "text": "Altitude (meters)"
+                                                }
+                                            }
+                                        }
+                                    },
+                                });
+                            }
+
+                            BalloonFlightsMap.visible_flights_data[flight_id]["vertical_rates_chart_data"] = $.extend(true, {}, flight_data["vertical_rates_data"]);
+                            if(!BalloonFlightsMap.visible_flights_data[flight_id]["vertical_rates_chart"]){
+                                BalloonFlightsMap.visible_flights_data[flight_id]["vertical_rates_chart"] = new Chart(document.getElementById(flight_id + "_vertical_rates_chart"), {
+                                    "type": "line",
+                                    "data": BalloonFlightsMap.visible_flights_data[flight_id]["vertical_rates_chart_data"],
+                                    "options": {
+                                        "responsive": true,
+                                        "maintainAspectRatio": false,
+                                        "plugins": {
+                                            "legend": {
+                                                "position": "top",
+                                            },
+                                            // "title": {
+                                            //     "display": true,
+                                            //     "text": flight_id + " Altitudes",
+                                            //     "position": "bottom",
+                                            // }
+                                        },
+                                        "scales": {
+                                            "x": {
+                                                "type": times_available ? "time" : "linear",
+                                                "title": {
+                                                    "display": true,
+                                                    "text": times_available ? "Time" : "Index"
+                                                }
+                                            },
+                                            "y": {
+                                                "title": {
+                                                    "display": true,
+                                                    "text": times_available ? "Avg. Vertical Rate (m/s)" : "Avg. Vertical Rate (m/index)"
+                                                }
+                                            }
+                                        }
+                                    },
+                                });
+                            }
+                        }
+                    });
+
+
+                    // After a timeout delay so the map loads enough, click the first flight checkbox
+                    setTimeout(() => {
+                        $(`h4:contains("Flights")`).siblings()[0].children[0].children[0].children[0].click();
+                    }, 100);
+                });
+            </script>
+        </section>
+        <section class="controls">
+            <button id="zoom_to_flights">Zoom To Flights (not set up)</button>
+            <a class="box" href="" download>
+                Download Flights KMZs (not set up)
+            </a>
+            <a class="box" href="./BalloonBaseMap/assets/data/controlled_airspace.kmz" download>
+                Download Controlled Airspace KMZ
+            </a>
+            <button id="debug_button" style="position: absolute; right: 0; display: none;">debug_button</button>
+            <button id="map_about_show_button">About Map</button>
+        </section>
+        <dialog id="map_about_dialog" style="overflow-y: scroll; scrollbar-gutter: stable;">
+            <button id="map_about_close_button">Close dialog</button>
+            <h2>About the Balloon Flights Map</h2>
+            <p>general about text here</p>
+            <h3>Control Info:</h3>
+            <ul>
+                <li>Right-click and drag to control map pitch and rotation</li>
+                <li>Open the drawing tool (top-left) and use the point tool (the dot) to place custom launch locations. If the predict line doesn't appear, try clicking "Fetch Predicts"</li>
+                <li>Open the layer switcher (hover over top-right) and click 2D or 3D under "Map Dimensions" to toggle compatible layers between 2D and 3D</li>
+                <li>Layer features on the map can be clicked to display a popup showing their properties</li>
+            </ul>
+            <h3>Known Issues:</h3>
+            <ul>
+                <li>This about dialog is not styled and does not have enough/any information about the map</li>
+                <li>This list has not been filled out yet</li>
+                <li>Flight KML/GeoJSON files have not been cleaned up or filtered or anything in any way</li>
+                <li>Some of the KML/GeoJSON files use feet for altitude, which is not correctly accounted for here</li>
+                <li>Ground track colors are not consistent between 2D and 3D</li>
+                <li>KML files are currently far better supported than GeoJSON files (though GeoJSON files can at least be displayed on the map to some degree)</li>
+            </ul>
+            <script>
+                const about_dialog = document.getElementById("map_about_dialog");
+                const about_show_button = document.getElementById("map_about_show_button");
+                const about_close_button = document.getElementById("map_about_close_button");
+
+                about_show_button.addEventListener("click", (event) => {
+                    about_dialog.showModal();
+                });
+                about_close_button.addEventListener("click", (event) => {
+                    about_dialog.close();
+                });
+            </script>
+        </dialog>
+    </section>
+</article>
+</main>
+</body>
+</html>

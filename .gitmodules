@@ -1,0 +1,3 @@
+[submodule "BalloonBaseMap"]
+	path = BalloonBaseMap
+	url = https://github.com/UMDBPP/BalloonBaseMap
